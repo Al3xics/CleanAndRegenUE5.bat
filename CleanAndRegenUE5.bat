@@ -148,7 +148,6 @@ echo ============================================================
 
 if "%IDE_NAME%"=="Rider" (
     echo   - .vs\
-    echo   - .idea\
     echo   - Binaries\
     echo   - DerivedDataCache\
     echo   - Intermediate\
@@ -202,7 +201,6 @@ call :delete_dir "Saved"
 :: IDE-specific cleanup
 if "%IDE_NAME%"=="Rider" (
     call :delete_dir ".vs"
-    call :delete_dir ".idea"
     call :delete_file ".vsconfig"
     call :delete_glob "*.sln"
 )

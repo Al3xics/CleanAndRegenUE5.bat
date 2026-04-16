@@ -1,9 +1,6 @@
 @echo off
 setlocal EnableDelayedExpansion
 
-:: Trap unexpected exits - keeps the window open so errors can be read
-if "%1"=="--trap" goto :eof
-
 :: ============================================================
 ::  Unreal Engine 5 - Clean & Regenerate Project Files
 ::  Supports: Rider, Visual Studio 2022, VSCode
@@ -140,38 +137,52 @@ echo  Unreal Engine found at: !UE_ROOT!
 echo.
 
 :: ----------------------------------------------------------
-:: STEP 4 - Confirm before cleaning
+:: STEP 4 - Detect previous IDE and confirm before cleaning
 :: ----------------------------------------------------------
+
+:: Detect previous IDE from leftover folders/files.
+:: Priority:
+::   1. .idea\           -> Rider   (Rider-exclusive)
+::   2. .vscode\         -> VSCode  (VSCode-exclusive)
+::   3. *.code-workspace -> VSCode  (VSCode-exclusive)
+::   4. .vs\ or *.sln   -> VS2022  (only if no .idea, since Rider also generates these)
+set "PREV_IDE=none"
+if exist ".idea" (
+    set "PREV_IDE=Rider"
+    goto prev_ide_detected
+)
+if exist ".vscode" (
+    set "PREV_IDE=VSCode"
+    goto prev_ide_detected
+)
+for %%F in (*.code-workspace) do (
+    set "PREV_IDE=VSCode"
+    goto prev_ide_detected
+)
+if exist ".vs" (
+    set "PREV_IDE=VS2022"
+    goto prev_ide_detected
+)
+for %%F in (*.sln) do (
+    set "PREV_IDE=VS2022"
+    goto prev_ide_detected
+)
+:prev_ide_detected
+
 echo ============================================================
 echo  The following folders/files will be DELETED:
 echo ============================================================
-
-if "%IDE_NAME%"=="Rider" (
-    echo   - .vs\
-    echo   - Binaries\
-    echo   - DerivedDataCache\
-    echo   - Intermediate\
-    echo   - Saved\
-    echo   - .vsconfig
-    echo   - *.sln
-)
-if "%IDE_NAME%"=="Visual Studio 2022" (
-    echo   - .vs\
-    echo   - Binaries\
-    echo   - DerivedDataCache\
-    echo   - Intermediate\
-    echo   - Saved\
-    echo   - .vsconfig
-    echo   - *.sln
-)
-if "%IDE_NAME%"=="Visual Studio Code" (
-    echo   - .vscode\
-    echo   - Binaries\
-    echo   - DerivedDataCache\
-    echo   - Intermediate\
-    echo   - Saved\
-    echo   - *.code-workspace
-)
+echo   - Binaries\
+echo   - DerivedDataCache\
+echo   - Intermediate\
+echo   - Saved\
+if "%PREV_IDE%"=="Rider"  echo   - .idea\
+if "%PREV_IDE%"=="VS2022" echo   - .vs\
+if "%PREV_IDE%"=="VS2022" echo   - .vsconfig
+if "%PREV_IDE%"=="VS2022" echo   - *.sln
+if "%PREV_IDE%"=="VSCode" echo   - .vscode\
+if "%PREV_IDE%"=="VSCode" echo   - *.code-workspace
+if "%PREV_IDE%"=="none"   echo   (no previous IDE artifacts detected)
 
 echo.
 set "CONFIRM="
@@ -198,18 +209,23 @@ call :delete_dir "DerivedDataCache"
 call :delete_dir "Intermediate"
 call :delete_dir "Saved"
 
-:: IDE-specific cleanup
-if "%IDE_NAME%"=="Rider" (
+
+if "%PREV_IDE%"=="none" (
+    echo   [INFO    ] No previous IDE artifacts detected, skipping IDE-specific cleanup.
+) else (
+    echo   [INFO    ] Previous IDE detected: %PREV_IDE%
+)
+
+:: Clean previous IDE artifacts
+if "%PREV_IDE%"=="Rider" (
+    call :delete_dir ".idea"
+)
+if "%PREV_IDE%"=="VS2022" (
     call :delete_dir ".vs"
     call :delete_file ".vsconfig"
     call :delete_glob "*.sln"
 )
-if "%IDE_NAME%"=="Visual Studio 2022" (
-    call :delete_dir ".vs"
-    call :delete_file ".vsconfig"
-    call :delete_glob "*.sln"
-)
-if "%IDE_NAME%"=="Visual Studio Code" (
+if "%PREV_IDE%"=="VSCode" (
     call :delete_dir ".vscode"
     call :delete_glob "*.code-workspace"
 )
@@ -263,18 +279,13 @@ echo ============================================================
 echo.
 
 echo  Tool: !GENERATE_CMD!
-echo  Mode: !GENERATE_MODE!
 echo.
 
-:: No IDE flag passed - format is set via BuildConfiguration.xml
-if "!GENERATE_MODE!"=="GPF" (
-    call "!GENERATE_CMD!" "%CD%\%UPROJECT_FILE%" -Game
-    set "REGEN_ERR=!errorlevel!"
-)
-if "!GENERATE_MODE!"=="UBT" (
-    "!GENERATE_CMD!" -ProjectFiles "%CD%\%UPROJECT_FILE%" -Game
-    set "REGEN_ERR=!errorlevel!"
-)
+:: Call UnrealVersionSelector with -projectfiles, same as right-click menu.
+:: This respects BuildConfiguration.xml and only generates files for the
+:: configured IDE, without creating extra files for other IDEs.
+"!GENERATE_CMD!" -projectfiles "%CD%\%UPROJECT_FILE%"
+set "REGEN_ERR=!errorlevel!"
 
 if "!REGEN_ERR!" neq "0" (
     echo.
@@ -282,8 +293,31 @@ if "!REGEN_ERR!" neq "0" (
     echo         See output above for details.
     echo.
     echo  Press any key to close...
-    pause >nul
+    pause ^>nul
     exit /b 1
+)
+
+:: ----------------------------------------------------------
+:: STEP 7 - Post-generation cleanup
+::           Remove any IDE artifacts that UE generated but don't
+::           belong to the target IDE.
+:: ----------------------------------------------------------
+echo ============================================================
+echo  Post-generation cleanup...
+echo ============================================================
+
+:: Rider and VS2022 both use .sln — only remove if switching to VSCode
+if "%IDE_NAME%"=="Visual Studio Code" (
+    call :delete_dir ".vs"
+    call :delete_dir ".idea"
+    call :delete_file ".vsconfig"
+    call :delete_glob "*.sln"
+)
+
+:: Remove VSCode artifacts if target IDE is not VSCode
+if not "%IDE_NAME%"=="Visual Studio Code" (
+    call :delete_dir ".vscode"
+    call :delete_glob "*.code-workspace"
 )
 
 echo.
@@ -292,17 +326,6 @@ echo  Done! Project files regenerated successfully for %IDE_NAME%.
 echo ============================================================
 echo.
 exit /b 0
-
-:: Safety net - should never be reached, but keeps window open if something
-:: exits unexpectedly before reaching one of the explicit exit /b above.
-:unexpected_exit
-echo.
-echo [ERROR] The script exited unexpectedly.
-echo         See output above for details.
-echo.
-echo  Press any key to close...
-pause >nul
-exit /b 1
 
 :: ============================================================
 ::  Subroutine : detect_ides
@@ -319,17 +342,30 @@ set "VS2022_STATUS=(not detected)"
 set "VSCODE_STATUS=(not detected)"
 
 :: --- Rider ---
-:: Check common JetBrains Toolbox and standalone install locations
+
+:: Method 1: fixed folder name (older standalone installs)
 for %%P in (
     "%LOCALAPPDATA%\Programs\Rider\bin\rider64.exe"
     "%PROGRAMFILES%\JetBrains\JetBrains Rider\bin\rider64.exe"
+    "%PROGRAMFILES%\JetBrains\Rider\bin\rider64.exe"
 ) do (
     if exist %%P (
         set "RIDER_FOUND=1"
         set "RIDER_STATUS=(installed)"
     )
 )
-:: Also check via JetBrains Toolbox apps folder
+
+:: Method 2: versioned folder name e.g. "JetBrains Rider 2026.1.0.1" (recent standalone installs)
+if "!RIDER_FOUND!"=="0" (
+    for /d %%D in ("%LOCALAPPDATA%\Programs\JetBrains Rider *") do (
+        if exist "%%D\bin\rider64.exe" (
+            set "RIDER_FOUND=1"
+            set "RIDER_STATUS=(installed)"
+        )
+    )
+)
+
+:: Method 3: JetBrains Toolbox apps folder
 if "!RIDER_FOUND!"=="0" (
     for /d %%D in ("%LOCALAPPDATA%\JetBrains\Toolbox\apps\Rider\*") do (
         if exist "%%D\bin\rider64.exe" (
@@ -423,37 +459,30 @@ exit /b 0
 
 :: ============================================================
 ::  Subroutine : find_generate_tool <ue_root>
-::  Sets GENERATE_CMD and GENERATE_MODE if a valid tool is found.
-::
-::  UE version history:
-::    UE4 / early UE5  -> GenerateProjectFiles.bat
-::    UE 5.0 - 5.2     -> GenerateProjectFiles.bat  (still present)
-::    UE 5.3+          -> UBT at DotNET\UnrealBuildTool\UnrealBuildTool.exe
-::    UE 5.6+          -> GPF.bat removed; only UBT remains
+::  Sets GENERATE_CMD if UnrealVersionSelector.exe is found.
+::  This mimics the "Generate Visual Studio project files"
+::  right-click behaviour and respects BuildConfiguration.xml
+::  without generating extra IDE files like UBT does directly.
 :: ============================================================
 :find_generate_tool
 set "GENERATE_CMD="
-set "GENERATE_MODE="
 set "_ROOT=%~1"
 
-:: Option A : classic GenerateProjectFiles.bat (UE4 / UE 5.0-5.2, some 5.3)
-if exist "!_ROOT!\Engine\Build\BatchFiles\GenerateProjectFiles.bat" (
-    set "GENERATE_CMD=!_ROOT!\Engine\Build\BatchFiles\GenerateProjectFiles.bat"
-    set "GENERATE_MODE=GPF"
+:: Option A : UnrealVersionSelector.exe - Win64 (standard launcher install)
+if exist "!_ROOT!\Engine\Binaries\Win64\UnrealVersionSelector.exe" (
+    set "GENERATE_CMD=!_ROOT!\Engine\Binaries\Win64\UnrealVersionSelector.exe"
     exit /b 0
 )
 
-:: Option B : UnrealBuildTool.exe  .NET 6+ layout  (UE 5.3 - 5.6+)
-if exist "!_ROOT!\Engine\Binaries\DotNET\UnrealBuildTool\UnrealBuildTool.exe" (
-    set "GENERATE_CMD=!_ROOT!\Engine\Binaries\DotNET\UnrealBuildTool\UnrealBuildTool.exe"
-    set "GENERATE_MODE=UBT"
+:: Option B : UnrealVersionSelector-Win64-Shipping.exe (some engine builds)
+if exist "!_ROOT!\Engine\Binaries\Win64\UnrealVersionSelector-Win64-Shipping.exe" (
+    set "GENERATE_CMD=!_ROOT!\Engine\Binaries\Win64\UnrealVersionSelector-Win64-Shipping.exe"
     exit /b 0
 )
 
-:: Option C : UnrealBuildTool.exe  legacy .NET layout  (UE4 / early UE5)
-if exist "!_ROOT!\Engine\Binaries\DotNET\UnrealBuildTool.exe" (
-    set "GENERATE_CMD=!_ROOT!\Engine\Binaries\DotNET\UnrealBuildTool.exe"
-    set "GENERATE_MODE=UBT"
+:: Option C : fallback to Epic Games Launcher's own UnrealVersionSelector
+if exist "%PROGRAMFILES(X86)%\Epic Games\Launcher\Engine\Binaries\Win64\UnrealVersionSelector.exe" (
+    set "GENERATE_CMD=%PROGRAMFILES(X86)%\Epic Games\Launcher\Engine\Binaries\Win64\UnrealVersionSelector.exe"
     exit /b 0
 )
 

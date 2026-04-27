@@ -107,7 +107,6 @@ echo  Example: C:\Program Files\Epic Games\UE_5.6
 echo.
 
 :ask_ue_path
-:: Open a Windows folder browser dialog via PowerShell
 set "UE_ROOT="
 for /f "usebackq delims=" %%F in (`powershell -NoProfile -Command "Add-Type -AssemblyName System.Windows.Forms; $d = New-Object System.Windows.Forms.FolderBrowserDialog; $d.Description = 'Select your Unreal Engine installation folder (e.g. UE_5.6)'; $d.RootFolder = 'MyComputer'; $d.SelectedPath = 'C:\Program Files\Epic Games'; if ($d.ShowDialog() -eq 'OK') { $d.SelectedPath } else { '' }" 2^>nul`) do (
     set "UE_ROOT=%%F"
@@ -147,11 +146,11 @@ echo.
 ::   3. *.code-workspace -> VSCode  (VSCode-exclusive)
 ::   4. .vs\ or *.sln   -> VS2022  (only if no .idea, since Rider also generates these)
 set "PREV_IDE=none"
-if exist ".idea" (
+if exist ".idea\" (
     set "PREV_IDE=Rider"
     goto prev_ide_detected
 )
-if exist ".vscode" (
+if exist ".vscode\" (
     set "PREV_IDE=VSCode"
     goto prev_ide_detected
 )
@@ -159,7 +158,7 @@ for %%F in (*.code-workspace) do (
     set "PREV_IDE=VSCode"
     goto prev_ide_detected
 )
-if exist ".vs" (
+if exist ".vs\" (
     set "PREV_IDE=VS2022"
     goto prev_ide_detected
 )
@@ -176,13 +175,23 @@ echo   - Binaries\
 echo   - DerivedDataCache\
 echo   - Intermediate\
 echo   - Saved\
-if "%PREV_IDE%"=="Rider"  echo   - .idea\
-if "%PREV_IDE%"=="VS2022" echo   - .vs\
-if "%PREV_IDE%"=="VS2022" echo   - .vsconfig
-if "%PREV_IDE%"=="VS2022" echo   - *.sln
-if "%PREV_IDE%"=="VSCode" echo   - .vscode\
-if "%PREV_IDE%"=="VSCode" echo   - *.code-workspace
-if "%PREV_IDE%"=="none"   echo   (no previous IDE artifacts detected)
+
+:: Only show IDE-specific files if switching IDE
+if not "%PREV_IDE%"=="none" (
+    if not "%PREV_IDE%"=="%IDE_NAME%" (
+        if "%PREV_IDE%"=="Rider"  echo   - .idea\
+        if "%PREV_IDE%"=="VS2022" (
+            if not "%IDE_NAME%"=="Rider" (
+                echo   - .vs\
+                echo   - .vsconfig
+                echo   - *.sln
+            )
+        )
+        if "%PREV_IDE%"=="VSCode" echo   - .vscode\
+        if "%PREV_IDE%"=="VSCode" echo   - *.code-workspace
+    )
+)
+if "%PREV_IDE%"=="none" echo   (no previous IDE artifacts detected)
 
 echo.
 set "CONFIRM="
@@ -209,35 +218,46 @@ call :delete_dir "DerivedDataCache"
 call :delete_dir "Intermediate"
 call :delete_dir "Saved"
 
-
+:: Only clean previous IDE artifacts if switching to a different IDE
 if "%PREV_IDE%"=="none" (
     echo   [INFO    ] No previous IDE artifacts detected, skipping IDE-specific cleanup.
-) else (
-    echo   [INFO    ] Previous IDE detected: %PREV_IDE%
+    goto clean_done
+)
+if "%PREV_IDE%"=="%IDE_NAME%" (
+    echo   [INFO    ] Same IDE selected, skipping IDE-specific cleanup.
+    goto clean_done
 )
 
-:: Clean previous IDE artifacts
+echo   [INFO    ] Switching from %PREV_IDE% to %IDE_NAME%, cleaning previous IDE artifacts...
+
+:: Rider -> anything : remove .idea
 if "%PREV_IDE%"=="Rider" (
     call :delete_dir ".idea"
 )
+
+:: VS2022 -> VSCode only : remove .vs .vsconfig *.sln
+:: VS2022 -> Rider : keep .vs .vsconfig *.sln (Rider uses them too)
 if "%PREV_IDE%"=="VS2022" (
-    call :delete_dir ".vs"
-    call :delete_file ".vsconfig"
-    call :delete_glob "*.sln"
+    if "%IDE_NAME%"=="Visual Studio Code" (
+        call :delete_dir ".vs"
+        call :delete_file ".vsconfig"
+        call :delete_glob "*.sln"
+    )
 )
+
+:: VSCode -> anything : remove .vscode *.code-workspace
 if "%PREV_IDE%"=="VSCode" (
     call :delete_dir ".vscode"
     call :delete_glob "*.code-workspace"
 )
 
+:clean_done
 echo.
 echo  Clean complete.
 echo.
 
 :: ----------------------------------------------------------
 :: STEP 5 - Write BuildConfiguration.xml
-::           Recommended approach for UE 5.3+ to set the IDE
-::           format without passing CLI flags to UBT.
 :: ----------------------------------------------------------
 set "BUILD_CFG_DIR=%APPDATA%\Unreal Engine\UnrealBuildTool"
 set "BUILD_CFG_FILE=!BUILD_CFG_DIR!\BuildConfiguration.xml"
@@ -281,9 +301,6 @@ echo.
 echo  Tool: !GENERATE_CMD!
 echo.
 
-:: Call UnrealVersionSelector with -projectfiles, same as right-click menu.
-:: This respects BuildConfiguration.xml and only generates files for the
-:: configured IDE, without creating extra files for other IDEs.
 "!GENERATE_CMD!" -projectfiles "%CD%\%UPROJECT_FILE%"
 set "REGEN_ERR=!errorlevel!"
 
@@ -293,31 +310,37 @@ if "!REGEN_ERR!" neq "0" (
     echo         See output above for details.
     echo.
     echo  Press any key to close...
-    pause ^>nul
+    pause >nul
     exit /b 1
 )
 
 :: ----------------------------------------------------------
 :: STEP 7 - Post-generation cleanup
-::           Remove any IDE artifacts that UE generated but don't
-::           belong to the target IDE.
+::          UE may generate extra IDE files regardless of config.
+::          Remove anything that doesn't belong to the target IDE.
 :: ----------------------------------------------------------
 echo ============================================================
 echo  Post-generation cleanup...
 echo ============================================================
 
-:: Rider and VS2022 both use .sln — only remove if switching to VSCode
+:: Remove VSCode artifacts if target is not VSCode
+if not "%IDE_NAME%"=="Visual Studio Code" (
+    call :delete_dir ".vscode"
+    call :delete_glob "*.code-workspace"
+)
+
+:: Remove .vs / .vsconfig / *.sln if target is VSCode
+:: (Rider keeps them, VS2022 keeps them)
 if "%IDE_NAME%"=="Visual Studio Code" (
     call :delete_dir ".vs"
-    call :delete_dir ".idea"
     call :delete_file ".vsconfig"
     call :delete_glob "*.sln"
 )
 
-:: Remove VSCode artifacts if target IDE is not VSCode
-if not "%IDE_NAME%"=="Visual Studio Code" (
-    call :delete_dir ".vscode"
-    call :delete_glob "*.code-workspace"
+:: Remove .idea if target is VS2022
+:: (Rider keeps .idea, VSCode already cleaned above)
+if "%IDE_NAME%"=="Visual Studio 2022" (
+    call :delete_dir ".idea"
 )
 
 echo.
@@ -329,9 +352,6 @@ exit /b 0
 
 :: ============================================================
 ::  Subroutine : detect_ides
-::  Probes the system for each supported IDE and sets:
-::    RIDER_FOUND / VS2022_FOUND / VSCODE_FOUND  (1 = found, 0 = not found)
-::    RIDER_STATUS / VS2022_STATUS / VSCODE_STATUS  (label shown in menu)
 :: ============================================================
 :detect_ides
 set "RIDER_FOUND=0"
@@ -342,8 +362,6 @@ set "VS2022_STATUS=(not detected)"
 set "VSCODE_STATUS=(not detected)"
 
 :: --- Rider ---
-
-:: Method 1: fixed folder name (older standalone installs)
 for %%P in (
     "%LOCALAPPDATA%\Programs\Rider\bin\rider64.exe"
     "%PROGRAMFILES%\JetBrains\JetBrains Rider\bin\rider64.exe"
@@ -354,8 +372,6 @@ for %%P in (
         set "RIDER_STATUS=(installed)"
     )
 )
-
-:: Method 2: versioned folder name e.g. "JetBrains Rider 2026.1.0.1" (recent standalone installs)
 if "!RIDER_FOUND!"=="0" (
     for /d %%D in ("%LOCALAPPDATA%\Programs\JetBrains Rider *") do (
         if exist "%%D\bin\rider64.exe" (
@@ -364,8 +380,6 @@ if "!RIDER_FOUND!"=="0" (
         )
     )
 )
-
-:: Method 3: JetBrains Toolbox apps folder
 if "!RIDER_FOUND!"=="0" (
     for /d %%D in ("%LOCALAPPDATA%\JetBrains\Toolbox\apps\Rider\*") do (
         if exist "%%D\bin\rider64.exe" (
@@ -382,8 +396,6 @@ if "!RIDER_FOUND!"=="0" (
 )
 
 :: --- Visual Studio 2022 ---
-
-:: Method 1: vswhere.exe without any workload requirement (most permissive)
 set "VSWHERE=%PROGRAMFILES(X86)%\Microsoft Visual Studio\Installer\vswhere.exe"
 if exist "!VSWHERE!" (
     for /f "usebackq tokens=*" %%V in (
@@ -395,8 +407,6 @@ if exist "!VSWHERE!" (
         )
     )
 )
-
-:: Method 2: look for devenv.exe in all known VS2022 install paths
 if "!VS2022_FOUND!"=="0" (
     for %%P in (
         "%PROGRAMFILES%\Microsoft Visual Studio\2022\Community\Common7\IDE\devenv.exe"
@@ -413,8 +423,6 @@ if "!VS2022_FOUND!"=="0" (
         )
     )
 )
-
-:: Method 3: registry lookup (covers non-standard install locations)
 if "!VS2022_FOUND!"=="0" (
     for /f "tokens=2*" %%A in (
         'reg query "HKLM\SOFTWARE\Microsoft\VisualStudio\17.0" /v "InstallDir" 2^>nul'
@@ -446,7 +454,6 @@ for %%P in (
         set "VSCODE_STATUS=(installed)"
     )
 )
-:: Also check if 'code' is on the PATH
 if "!VSCODE_FOUND!"=="0" (
     where code >nul 2>&1
     if not errorlevel 1 (
@@ -459,10 +466,6 @@ exit /b 0
 
 :: ============================================================
 ::  Subroutine : find_generate_tool <ue_root>
-::  Sets GENERATE_CMD if UnrealVersionSelector.exe is found.
-::  This mimics the "Generate Visual Studio project files"
-::  right-click behaviour and respects BuildConfiguration.xml
-::  without generating extra IDE files like UBT does directly.
 :: ============================================================
 :find_generate_tool
 set "GENERATE_CMD="
